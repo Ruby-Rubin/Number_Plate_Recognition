@@ -1,0 +1,26 @@
+# Virtual environment
+venv/
+.venv/
+
+# Dataset
+NumberPlate_Annotated_Dataset/
+dataset/images/
+dataset/labels/
+
+# YOLO training outputs
+runs/
+*.pt
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# OS files
+Thumbs.db
+.DS_Store
