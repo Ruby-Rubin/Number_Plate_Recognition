@@ -1,26 +1,69 @@
-# Virtual environment
+# ============================================================
+# PYTHON
+# ============================================================
+
 venv/
 .venv/
+__pycache__/
+*.py[cod]
+*$py.class
 
-# Dataset
+# ============================================================
+# DATASET
+# ============================================================
+
+# Original downloaded dataset
 NumberPlate_Annotated_Dataset/
+
+# Generated YOLO dataset files
 dataset/images/
 dataset/labels/
 
-# YOLO training outputs
+# Generated metadata containing plate numbers
+dataset/plate_metadata.csv
+
+# Runtime-generated YOLO config
+dataset/data_runtime.yaml
+
+# Dataset cache files
+dataset/**/*.cache
+
+# ============================================================
+# YOLO TRAINING OUTPUTS
+# ============================================================
+
 runs/
 *.pt
 
-# Python cache
-__pycache__/
-*.pyc
+# ============================================================
+# GENERATED TEST / VERIFICATION FILES
+# ============================================================
 
-# Jupyter
+dataset_verification.jpg
+
+# ============================================================
+# PYTHON / ML CACHE
+# ============================================================
+
+.cache/
+*.log
+
+# ============================================================
+# JUPYTER
+# ============================================================
+
 .ipynb_checkpoints/
 
-# VS Code
+# ============================================================
+# VS CODE
+# ============================================================
+
 .vscode/
 
-# OS files
+# ============================================================
+# WINDOWS / OS FILES
+# ============================================================
+
 Thumbs.db
 .DS_Store
+desktop.ini

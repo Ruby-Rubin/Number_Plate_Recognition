@@ -9,7 +9,7 @@ from pathlib import Path
 
 MODEL_NAME = "yolo26n.pt"
 
-EPOCHS = 3
+EPOCHS = 100
 IMAGE_SIZE = 640
 PATIENCE = 20
 
