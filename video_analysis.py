@@ -1,13 +1,12 @@
 from ultralytics import YOLO
 from pathlib import Path
-from collections import defaultdict, Counter
+from collections import defaultdict
 import cv2
 import torch
 import easyocr
 import pandas as pd
-import re
 
-# Reuse our V4 plate-format correction logic
+# Reuse our Indian plate-format correction logic
 from ocr_postprocess_v4 import (
     learn_patterns,
     correct_plate,
@@ -75,14 +74,20 @@ YOLO_CONFIDENCE = 0.20
 
 OCR_INTERVAL = 5
 
-OCR_ALLOWLIST = (
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-)
+CROP_PADDING = 2
 
 MIN_CROP_WIDTH = 30
 MIN_CROP_HEIGHT = 8
 
-CROP_PADDING = 2
+# ------------------------------------------------------------
+# LIVE DISPLAY
+# ------------------------------------------------------------
+
+SHOW_LIVE_WINDOW = True
+
+# Maximum window size
+DISPLAY_MAX_WIDTH = 1200
+DISPLAY_MAX_HEIGHT = 700
 
 
 # ============================================================
@@ -93,10 +98,7 @@ def create_ocr_variants(crop):
 
     variants = []
 
-    # --------------------------------------------------------
-    # Resize
-    # --------------------------------------------------------
-
+    # Original enlarged
     enlarged = cv2.resize(
         crop,
         None,
@@ -109,11 +111,7 @@ def create_ocr_variants(crop):
         ("original", enlarged)
     )
 
-
-    # --------------------------------------------------------
     # Grayscale
-    # --------------------------------------------------------
-
     gray = cv2.cvtColor(
         enlarged,
         cv2.COLOR_BGR2GRAY
@@ -123,11 +121,7 @@ def create_ocr_variants(crop):
         ("gray", gray)
     )
 
-
-    # --------------------------------------------------------
     # CLAHE
-    # --------------------------------------------------------
-
     clahe = cv2.createCLAHE(
         clipLimit=2.0,
         tileGridSize=(8, 8)
@@ -140,7 +134,6 @@ def create_ocr_variants(crop):
     variants.append(
         ("clahe", enhanced)
     )
-
 
     return variants
 
@@ -157,7 +150,6 @@ def read_plate(reader, crop):
         crop
     )
 
-
     for variant_name, variant in variants:
 
         try:
@@ -170,7 +162,10 @@ def read_plate(reader, crop):
 
                 paragraph=False,
 
-                allowlist=OCR_ALLOWLIST,
+                allowlist=(
+                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    "0123456789"
+                ),
 
                 decoder="beamsearch",
 
@@ -188,15 +183,12 @@ def read_plate(reader, crop):
             )
 
         except Exception:
-
             continue
-
 
         for result in results:
 
             if len(result) < 3:
                 continue
-
 
             text = normalize(
                 result[1]
@@ -206,32 +198,23 @@ def read_plate(reader, crop):
                 result[2]
             )
 
-
             if not text:
                 continue
 
-
             candidates.append({
-
                 "text": text,
-
                 "confidence": confidence,
-
                 "variant": variant_name
             })
 
-
     if not candidates:
-
         return "", 0.0, "none"
 
-
     # --------------------------------------------------------
-    # Apply plate-format correction
+    # Apply Indian plate correction
     # --------------------------------------------------------
 
     corrected_candidates = []
-
 
     for candidate in candidates:
 
@@ -242,50 +225,31 @@ def read_plate(reader, crop):
             )
         )
 
-
-        # Combine OCR confidence with format score.
-        #
-        # Higher OCR confidence = better.
-        # Lower correction score = better.
-        #
-
         score = (
             candidate["confidence"] * 5.0
             - correction_score * 0.25
         )
 
-
         corrected_candidates.append({
 
             "text": corrected_text,
 
-            "raw_text": candidate["text"],
-
             "confidence":
                 candidate["confidence"],
 
-            "score": score,
+            "score":
+                score,
 
             "variant":
-                candidate["variant"],
-
-            "pattern":
-                pattern
+                candidate["variant"]
         })
-
-
-    # --------------------------------------------------------
-    # Select best candidate for this frame
-    # --------------------------------------------------------
 
     corrected_candidates.sort(
         key=lambda item: item["score"],
         reverse=True
     )
 
-
     best = corrected_candidates[0]
-
 
     return (
         best["text"],
@@ -295,7 +259,7 @@ def read_plate(reader, crop):
 
 
 # ============================================================
-# BEST TRACK RESULT
+# TRACK CONSENSUS
 # ============================================================
 
 def get_track_consensus(track_data):
@@ -303,58 +267,38 @@ def get_track_consensus(track_data):
     if not track_data:
         return "", 0.0
 
-
-    # --------------------------------------------------------
-    # Weighted voting
-    # --------------------------------------------------------
-
     weighted_scores = defaultdict(float)
-
     confidence_values = defaultdict(list)
-
 
     for item in track_data:
 
         text = item["text"]
-
         confidence = item["confidence"]
-
 
         if not text:
             continue
 
-
-        # Give repeated observations more weight.
         weighted_scores[text] += (
-            0.5
-            +
-            confidence
+            0.5 + confidence
         )
-
 
         confidence_values[text].append(
             confidence
         )
 
-
     if not weighted_scores:
-
         return "", 0.0
 
-
-    # Highest accumulated score
     best_text = max(
         weighted_scores,
         key=weighted_scores.get
     )
-
 
     average_confidence = sum(
         confidence_values[best_text]
     ) / len(
         confidence_values[best_text]
     )
-
 
     return (
         best_text,
@@ -363,7 +307,7 @@ def get_track_consensus(track_data):
 
 
 # ============================================================
-# DRAW LABEL
+# DRAW TRACK LABEL
 # ============================================================
 
 def draw_track_label(
@@ -377,10 +321,7 @@ def draw_track_label(
     confidence
 ):
 
-    # --------------------------------------------------------
     # Bounding box
-    # --------------------------------------------------------
-
     cv2.rectangle(
         frame,
         (x1, y1),
@@ -389,11 +330,7 @@ def draw_track_label(
         2
     )
 
-
-    # --------------------------------------------------------
-    # Label
-    # --------------------------------------------------------
-
+    # Text
     if plate_text:
 
         label = (
@@ -409,21 +346,86 @@ def draw_track_label(
             "Reading..."
         )
 
+    # Text background
+    (text_width, text_height), baseline = (
+        cv2.getTextSize(
+            label,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            2
+        )
+    )
 
     text_y = max(
         30,
         y1 - 10
     )
 
+    background_y1 = (
+        text_y
+        - text_height
+        - baseline
+    )
+
+    background_y2 = (
+        text_y
+        + baseline
+    )
+
+    background_x2 = (
+        x1
+        + text_width
+        + 10
+    )
+
+    cv2.rectangle(
+        frame,
+        (x1, background_y1),
+        (background_x2, background_y2),
+        (0, 0, 0),
+        -1
+    )
 
     cv2.putText(
         frame,
         label,
-        (x1, text_y),
+        (x1 + 5, text_y),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.55,
         (0, 255, 0),
         2
+    )
+
+
+# ============================================================
+# RESIZE FOR DISPLAY
+# ============================================================
+
+def resize_for_display(frame):
+
+    height, width = frame.shape[:2]
+
+    scale = min(
+        DISPLAY_MAX_WIDTH / width,
+        DISPLAY_MAX_HEIGHT / height,
+        1.0
+    )
+
+    if scale == 1.0:
+        return frame
+
+    new_width = int(
+        width * scale
+    )
+
+    new_height = int(
+        height * scale
+    )
+
+    return cv2.resize(
+        frame,
+        (new_width, new_height),
+        interpolation=cv2.INTER_AREA
     )
 
 
@@ -437,7 +439,6 @@ if __name__ == "__main__":
     print("TRAFFIC VIDEO NUMBER PLATE ANALYSIS")
     print("========================================")
 
-
     # ========================================================
     # CHECK FILES
     # ========================================================
@@ -449,14 +450,12 @@ if __name__ == "__main__":
             f"{MODEL_PATH}"
         )
 
-
     if not VIDEO_PATH.exists():
 
         raise FileNotFoundError(
             f"\nTraffic video not found:\n"
             f"{VIDEO_PATH}"
         )
-
 
     if not METADATA_PATH.exists():
 
@@ -465,9 +464,8 @@ if __name__ == "__main__":
             f"{METADATA_PATH}"
         )
 
-
     # ========================================================
-    # CREATE OUTPUT DIRECTORIES
+    # OUTPUT DIRECTORIES
     # ========================================================
 
     OUTPUT_DIR.mkdir(
@@ -480,29 +478,24 @@ if __name__ == "__main__":
         exist_ok=True
     )
 
-
     # ========================================================
-    # LOAD TRAINING METADATA
+    # LOAD METADATA
     # ========================================================
 
     metadata = pd.read_csv(
         METADATA_PATH
     )
 
-
-    # Learn plate structures from TRAIN split only.
     global PLATE_PATTERNS
 
     PLATE_PATTERNS = learn_patterns(
         metadata
     )
 
-
     print(
         "\nLearned state patterns:",
         len(PLATE_PATTERNS)
     )
-
 
     # ========================================================
     # DEVICE
@@ -526,7 +519,6 @@ if __name__ == "__main__":
         print("\nCUDA: NO")
         print("Using CPU.")
 
-
     # ========================================================
     # LOAD YOLO
     # ========================================================
@@ -536,7 +528,6 @@ if __name__ == "__main__":
     model = YOLO(
         str(MODEL_PATH)
     )
-
 
     # ========================================================
     # LOAD OCR
@@ -549,29 +540,22 @@ if __name__ == "__main__":
         gpu=torch.cuda.is_available()
     )
 
-
     # ========================================================
     # OPEN VIDEO
     # ========================================================
 
     print("\nOpening video:")
-
-    print(
-        VIDEO_PATH
-    )
-
+    print(VIDEO_PATH)
 
     cap = cv2.VideoCapture(
         str(VIDEO_PATH)
     )
-
 
     if not cap.isOpened():
 
         raise RuntimeError(
             "Could not open traffic video."
         )
-
 
     # ========================================================
     # VIDEO INFORMATION
@@ -599,7 +583,6 @@ if __name__ == "__main__":
         )
     )
 
-
     print("\nVideo information:")
 
     print(
@@ -617,15 +600,13 @@ if __name__ == "__main__":
         total_frames
     )
 
-
     # ========================================================
-    # OUTPUT VIDEO WRITER
+    # VIDEO WRITER
     # ========================================================
 
     fourcc = cv2.VideoWriter_fourcc(
         *"mp4v"
     )
-
 
     writer = cv2.VideoWriter(
         str(OUTPUT_VIDEO),
@@ -637,13 +618,36 @@ if __name__ == "__main__":
         )
     )
 
-
     if not writer.isOpened():
 
         raise RuntimeError(
             "Could not create output video."
         )
 
+    # ========================================================
+    # CREATE LIVE WINDOW
+    # ========================================================
+
+    if SHOW_LIVE_WINDOW:
+
+        cv2.namedWindow(
+            "Traffic Video Analysis",
+            cv2.WINDOW_NORMAL
+        )
+
+        cv2.resizeWindow(
+            "Traffic Video Analysis",
+            1200,
+            700
+        )
+
+        print(
+            "\nLive output enabled."
+        )
+
+        print(
+            "Press Q in the video window to stop."
+        )
 
     # ========================================================
     # TRACK DATA
@@ -657,25 +661,23 @@ if __name__ == "__main__":
 
     frame_number = 0
 
+    stopped_by_user = False
 
     # ========================================================
-    # MAIN VIDEO LOOP
+    # MAIN LOOP
     # ========================================================
 
     while True:
 
         success, frame = cap.read()
 
-
         if not success:
             break
 
-
         frame_number += 1
 
-
         # ----------------------------------------------------
-        # TRACK PLATES
+        # TRACK
         # ----------------------------------------------------
 
         results = model.track(
@@ -695,31 +697,84 @@ if __name__ == "__main__":
             verbose=False
         )
 
+        # ----------------------------------------------------
+        # NO RESULTS
+        # ----------------------------------------------------
 
         if not results:
 
-            writer.write(frame)
+            writer.write(
+                frame
+            )
+
+            if SHOW_LIVE_WINDOW:
+
+                display_frame = (
+                    resize_for_display(
+                        frame
+                    )
+                )
+
+                cv2.imshow(
+                    "Traffic Video Analysis",
+                    display_frame
+                )
+
+                key = (
+                    cv2.waitKey(1)
+                    & 0xFF
+                )
+
+                if key == ord("q"):
+
+                    stopped_by_user = True
+                    break
 
             continue
 
-
         result = results[0]
 
-
         # ----------------------------------------------------
-        # CHECK TRACK IDS
+        # CHECK TRACKING IDS
         # ----------------------------------------------------
 
         if (
             result.boxes is None
-            or
-            not result.boxes.is_track
+            or not result.boxes.is_track
         ):
 
-            writer.write(frame)
+            writer.write(
+                frame
+            )
+
+            if SHOW_LIVE_WINDOW:
+
+                display_frame = (
+                    resize_for_display(
+                        frame
+                    )
+                )
+
+                cv2.imshow(
+                    "Traffic Video Analysis",
+                    display_frame
+                )
+
+                key = (
+                    cv2.waitKey(1)
+                    & 0xFF
+                )
+
+                if key == ord("q"):
+
+                    stopped_by_user = True
+                    break
 
             continue
 
+        # ----------------------------------------------------
+        # GET DETECTIONS
+        # ----------------------------------------------------
 
         boxes = (
             result.boxes.xyxy
@@ -728,14 +783,12 @@ if __name__ == "__main__":
             .numpy()
         )
 
-
         track_ids = (
             result.boxes.id
             .int()
             .cpu()
             .tolist()
         )
-
 
         confidences = (
             result.boxes.conf
@@ -744,9 +797,8 @@ if __name__ == "__main__":
             .numpy()
         )
 
-
         # ----------------------------------------------------
-        # PROCESS EACH TRACK
+        # PROCESS TRACKS
         # ----------------------------------------------------
 
         for box, track_id, detection_confidence in zip(
@@ -760,11 +812,7 @@ if __name__ == "__main__":
                 for value in box
             ]
 
-
-            # ------------------------------------------------
             # Clamp coordinates
-            # ------------------------------------------------
-
             x1 = max(
                 0,
                 min(
@@ -797,13 +845,16 @@ if __name__ == "__main__":
                 )
             )
 
+            crop_width = (
+                x2 - x1
+            )
 
-            crop_width = x2 - x1
-            crop_height = y2 - y1
-
+            crop_height = (
+                y2 - y1
+            )
 
             # ------------------------------------------------
-            # Current recognized plate
+            # CURRENT CONSENSUS
             # ------------------------------------------------
 
             plate_text, plate_confidence = (
@@ -814,9 +865,8 @@ if __name__ == "__main__":
                 )
             )
 
-
             # ------------------------------------------------
-            # OCR every N frames per track
+            # OCR EVERY N FRAMES
             # ------------------------------------------------
 
             should_run_ocr = (
@@ -838,13 +888,10 @@ if __name__ == "__main__":
                 )
             )
 
-
             if (
                 should_run_ocr
-                and
-                crop_width >= MIN_CROP_WIDTH
-                and
-                crop_height >= MIN_CROP_HEIGHT
+                and crop_width >= MIN_CROP_WIDTH
+                and crop_height >= MIN_CROP_HEIGHT
             ):
 
                 crop = frame[
@@ -867,7 +914,6 @@ if __name__ == "__main__":
                     )
                 ]
 
-
                 if crop.size > 0:
 
                     text, ocr_confidence, variant = (
@@ -877,11 +923,9 @@ if __name__ == "__main__":
                         )
                     )
 
-
                     last_ocr_frame[
                         track_id
                     ] = frame_number
-
 
                     if text:
 
@@ -907,8 +951,7 @@ if __name__ == "__main__":
                                 variant
                         })
 
-
-                        # Limit memory for very long videos.
+                        # Keep memory bounded
                         if len(
                             track_observations[
                                 track_id
@@ -923,8 +966,7 @@ if __name__ == "__main__":
                                 ][-100:]
                             )
 
-
-                        # Save only a few crops per track.
+                        # Save a few crops
                         if (
                             track_crops_saved[
                                 track_id
@@ -936,26 +978,22 @@ if __name__ == "__main__":
                                 f"frame_{frame_number}.jpg"
                             )
 
-
                             crop_path = (
                                 CROPS_DIR
                                 / crop_filename
                             )
-
 
                             cv2.imwrite(
                                 str(crop_path),
                                 crop
                             )
 
-
                             track_crops_saved[
                                 track_id
                             ] += 1
 
-
             # ------------------------------------------------
-            # Update consensus after OCR
+            # UPDATE CONSENSUS
             # ------------------------------------------------
 
             plate_text, plate_confidence = (
@@ -966,9 +1004,8 @@ if __name__ == "__main__":
                 )
             )
 
-
             # ------------------------------------------------
-            # Draw
+            # DRAW
             # ------------------------------------------------
 
             draw_track_label(
@@ -987,16 +1024,26 @@ if __name__ == "__main__":
                 plate_confidence
             )
 
+        # ====================================================
+        # FRAME INFORMATION
+        # ====================================================
 
-        # ----------------------------------------------------
-        # Add frame number
-        # ----------------------------------------------------
+        progress = (
+            frame_number
+            / max(
+                1,
+                total_frames
+            )
+            * 100
+        )
 
         cv2.putText(
 
             frame,
 
-            f"Frame: {frame_number}/{total_frames}",
+            f"Frame: "
+            f"{frame_number}/"
+            f"{total_frames}",
 
             (20, 35),
 
@@ -1009,41 +1056,61 @@ if __name__ == "__main__":
             2
         )
 
-
-        # ----------------------------------------------------
-        # Write frame
-        # ----------------------------------------------------
+        # ====================================================
+        # SAVE OUTPUT FRAME
+        # ====================================================
 
         writer.write(
             frame
         )
 
+        # ====================================================
+        # SHOW LIVE OUTPUT
+        # ====================================================
 
-        # ----------------------------------------------------
-        # Progress
-        # ----------------------------------------------------
+        if SHOW_LIVE_WINDOW:
 
-        if (
-            frame_number % 50 == 0
-        ):
-
-            progress = (
-                frame_number
-                /
-                max(
-                    1,
-                    total_frames
+            display_frame = (
+                resize_for_display(
+                    frame
                 )
-                * 100
             )
 
+            cv2.imshow(
+                "Traffic Video Analysis",
+                display_frame
+            )
+
+            # Q = quit
+            key = (
+                cv2.waitKey(1)
+                & 0xFF
+            )
+
+            if key == ord("q"):
+
+                print(
+                    "\nStopped by user."
+                )
+
+                stopped_by_user = True
+
+                break
+
+        # ====================================================
+        # TERMINAL PROGRESS
+        # ====================================================
+
+        if (
+            frame_number % 25 == 0
+        ):
 
             print(
                 f"Progress: "
                 f"{progress:.1f}% "
-                f"({frame_number}/{total_frames})"
+                f"({frame_number}/"
+                f"{total_frames})"
             )
-
 
     # ========================================================
     # RELEASE
@@ -1053,13 +1120,15 @@ if __name__ == "__main__":
 
     writer.release()
 
+    if SHOW_LIVE_WINDOW:
+
+        cv2.destroyAllWindows()
 
     # ========================================================
-    # SAVE FINAL TRACK RESULTS
+    # SAVE FINAL RESULTS
     # ========================================================
 
     final_rows = []
-
 
     for track_id, observations in (
         track_observations.items()
@@ -1071,16 +1140,9 @@ if __name__ == "__main__":
             )
         )
 
-
         if not final_text:
+
             final_text = "UNKNOWN"
-
-
-        # Count observations
-        observation_count = len(
-            observations
-        )
-
 
         final_rows.append({
 
@@ -1097,25 +1159,23 @@ if __name__ == "__main__":
                 ),
 
             "ocr_observations":
-                observation_count
+                len(observations)
         })
 
+    # Sort by track ID
+    final_rows.sort(
+        key=lambda row:
+            row["track_id"]
+    )
 
     final_df = pd.DataFrame(
         final_rows
     )
 
-
-    final_df = final_df.sort_values(
-        "track_id"
-    )
-
-
     final_df.to_csv(
         OUTPUT_CSV,
         index=False
     )
-
 
     # ========================================================
     # FINAL SUMMARY
@@ -1125,7 +1185,6 @@ if __name__ == "__main__":
     print("VIDEO ANALYSIS COMPLETE")
     print("========================================")
 
-
     print(
         "Output video:"
     )
@@ -1133,7 +1192,6 @@ if __name__ == "__main__":
     print(
         OUTPUT_VIDEO.resolve()
     )
-
 
     print(
         "\nResults CSV:"
@@ -1143,17 +1201,14 @@ if __name__ == "__main__":
         OUTPUT_CSV.resolve()
     )
 
-
     print(
         "\nUnique tracked plates:",
         len(final_rows)
     )
 
-
     print(
         "\nDetected plate results:"
     )
-
 
     for row in final_rows:
 
@@ -1161,4 +1216,17 @@ if __name__ == "__main__":
             f'  ID {row["track_id"]}: '
             f'{row["plate_number"]} '
             f'({row["confidence"]:.2f})'
+        )
+
+    if stopped_by_user:
+
+        print(
+            "\nNote: Processing was stopped "
+            "before the video ended."
+        )
+
+    else:
+
+        print(
+            "\nThe complete video was processed."
         )
