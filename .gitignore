@@ -67,3 +67,6 @@ dataset_verification.jpg
 Thumbs.db
 .DS_Store
 desktop.ini
+
+# Traffic videos
+videos/
